@@ -38,6 +38,9 @@ class LanguagePack::Base
       when /^Fedora release 20/i
         "fedora-20"
       end
+    elsif File.exists?("/etc/system-release")
+      redhat_release = File.read("/etc/system-release").chomp
+      "centos-6" if redhat_release =~ /^Amazon Linux AMI/
     elsif File.exists?("/etc/SuSE-release")
       suse_release = File.read("/etc/SuSE-release").chomp
       case suse_release
