@@ -12,11 +12,7 @@ module LanguagePack
       end
     end
 
-    if ENV["STACK"] == "heroku-18"
-      DEFAULT_VERSION_NUMBER = "2.4.4"
-    else
-      DEFAULT_VERSION_NUMBER = "2.3.7"
-    end
+    DEFAULT_VERSION_NUMBER = "2.4.4"
 
     DEFAULT_VERSION        = "ruby-#{DEFAULT_VERSION_NUMBER}"
     LEGACY_VERSION_NUMBER  = "1.9.2"
