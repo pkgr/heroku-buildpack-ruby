@@ -12,7 +12,7 @@ require "language_pack/version"
 # base Ruby Language Pack. This is for any base ruby app.
 class LanguagePack::Ruby < LanguagePack::Base
   NAME                 = "ruby"
-  LIBYAML_VERSION      = "0.1.6"
+  LIBYAML_VERSION      = "0.1.7"
   LIBYAML_PATH         = "libyaml-#{LIBYAML_VERSION}"
   BUNDLER_VERSION      = "1.11.2"
   BUNDLER_GEM_PATH     = "bundler-#{BUNDLER_VERSION}"
