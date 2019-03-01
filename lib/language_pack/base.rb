@@ -24,7 +24,7 @@ class LanguagePack::Base
 
   def initialize(app_path: , cache_path: , gemfile_lock: )
     @app_path = app_path
-    @stack         = ENV.fetch("STACK")
+    @stack         = ENV.fetch("STACK", "")
     @cache         = LanguagePack::Cache.new(cache_path)
     @metadata      = LanguagePack::Metadata.new(cache_path: cache_path)
     @new_app       = @metadata.empty?
@@ -35,6 +35,7 @@ class LanguagePack::Base
   end
 
   def get_arch
+    return "amd64" # packager currently only supports amd64
     command = "dpkg --print-architecture"
     arch = run!(command, silent: true).strip
 

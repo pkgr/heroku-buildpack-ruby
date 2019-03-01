@@ -19,6 +19,8 @@ class LanguagePack::Helpers::NodeInstaller
     # helps us avoid accidentally deleting code out of the user's slug by mistake.
     Dir.mktmpdir do |dir|
       node_bin = "#{binary_path}/bin/node"
+      # buildcurl has no path prefix, so overwriting. Can't override binary_path since it seems to be used elsewhere
+      node_bin = "./bin/node"
 
       Dir.chdir(dir) do
         @fetcher.fetch_untar(@url, node_bin)
