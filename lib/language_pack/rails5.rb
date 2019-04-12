@@ -14,6 +14,19 @@ class LanguagePack::Rails5 < LanguagePack::Rails42
     end
   end
 
+  def setup_profiled
+    instrument 'setup_profiled' do
+      super
+      set_env_default "RAILS_LOG_TO_STDOUT", "enabled"
+    end
+  end
+
+  def default_config_vars
+    super.merge({
+      "RAILS_LOG_TO_STDOUT" => "enabled"
+    })
+  end
+
   def install_plugins
     # do not install plugins, do not call super, do not warn
   end
