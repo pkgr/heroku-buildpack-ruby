@@ -46,7 +46,7 @@ GEM
     platform-api (2.2.0)
       heroics (~> 0.0.25)
       moneta (~> 1.0.0)
-    rake (12.3.3)
+    rake (13.0.0)
     repl_runner (0.0.3)
       activesupport
     rrrretry (1.0.0)
@@ -75,7 +75,7 @@ DEPENDENCIES
   json (~> 2.0.2)
   netrc
   parallel_tests
-  rake (< 13)
+  rake
   rspec-core
   rspec-expectations
   rspec-retry

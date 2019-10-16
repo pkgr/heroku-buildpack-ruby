@@ -5,7 +5,7 @@ group :development, :test do
   gem "rspec-core"
   gem "rspec-expectations"
   gem "excon"
-  gem "rake", '< 13'
+  gem "rake"
   gem "parallel_tests"
   gem 'rspec-retry'
   gem "netrc"
