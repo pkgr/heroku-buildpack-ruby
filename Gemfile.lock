@@ -1,5 +1,5 @@
 GIT
-  remote: git://github.com/hone/ruby-git.git
+  remote: https://github.com/hone/ruby-git.git
   revision: 264836fcff3c037d8d8fc44bd770b150b46fdc4e
   branch: master
   specs:
@@ -81,4 +81,4 @@ DEPENDENCIES
   rspec-retry
 
 BUNDLED WITH
-   1.17.3
+   2.1.4
