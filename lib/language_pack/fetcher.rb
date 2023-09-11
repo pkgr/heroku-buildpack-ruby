@@ -44,10 +44,11 @@ module LanguagePack
       buildcurl_mapping = {
         "ruby" => /^ruby-(.+)$/,
         "rubygem-bundler" => /^bundler-(.+)$/,
-        "libyaml" => /^libyaml-(.+)$/
+        "libyaml" => /^libyaml-(.+)$/,
+        "node" => /^node-v(.+)-linux.+$/,
       }
       buildcurl_mapping.each do |k,v|
-        if File.basename(binary, ".tgz") =~ v
+        if File.basename(binary, ".tgz") =~ v || File.basename(binary, ".tar.gz") =~ v
           return "set -o pipefail; curl -L --get --fail --retry 3 #{buildcurl_url} -d recipe=#{k} -d version=#{$1} -d target=$TARGET #{rest.join(" ")}"
         end
       end

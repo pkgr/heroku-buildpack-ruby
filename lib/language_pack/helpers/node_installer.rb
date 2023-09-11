@@ -18,7 +18,9 @@ class LanguagePack::Helpers::NodeInstaller
     # clean up un-used files. Instead we untar in a temp directory which
     # helps us avoid accidentally deleting code out of the user's slug by mistake.
     Dir.mktmpdir do |dir|
-      node_bin = "#{binary_path}/bin/node"
+      # node_bin = "#{binary_path}/bin/node"
+      # buildcurl has no path prefix
+      node_bin = "bin/node"
 
       Dir.chdir(dir) do
         @fetcher.fetch_untar(@url, node_bin)
