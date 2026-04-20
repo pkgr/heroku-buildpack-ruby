@@ -95,6 +95,14 @@ replace(
 )
 
 replace(
+    "lib/language_pack/base.rb",
+    r'(^  def self\.get_arch\n)',
+    "\\1    return \"amd64\" # packager currently only supports amd64\n",
+    description="base arch default",
+    flags=re.MULTILINE,
+)
+
+replace(
     "bin/compile",
     r'^checks::ensure_supported_stack "\$\{STACK:\?Required env var STACK is not set\}"$',
     '# checks::ensure_supported_stack "${STACK:?Required env var STACK is not set}"',
