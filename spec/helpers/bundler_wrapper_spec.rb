@@ -1,54 +1,49 @@
-require 'spec_helper'
+require "spec_helper"
+
+describe "Multiple platform detection" do
+  it "reports true on bundler 2.2+" do
+    Dir.mktmpdir do |dir|
+      gemfile = Pathname(dir).join("Gemfile")
+      report = HerokuBuildReport.dev_null
+
+      LanguagePack::Helpers::BundlerWrapper.new(
+        bundler_path: Dir.mktmpdir,
+        bundler_version: "2.5.7",
+        gemfile_path: gemfile,
+        report: report
+      )
+      expect(report.data).to eq(
+        {
+          "ruby.dot_ruby_version" => nil,
+          "bundler.major" => "2",
+          "bundler.minor" => "5",
+          "bundler.patch" => "7",
+          "bundler.version_installed" => "2.5.7"
+        }
+      )
+    end
+  end
+end
 
 describe "BundlerWrapper" do
+  it "handles windows BUNDLED WITH" do
+    Dir.mktmpdir do |dir|
+      tmp_dir = Pathname(dir)
+      FileUtils.cp_r(fixture_path("windows_lockfile/."), tmp_dir)
 
-  before(:each) do
-    if ENV['RUBYOPT']
-      @original_rubyopt = ENV['RUBYOPT']
-      ENV['RUBYOPT'] = ENV['RUBYOPT'].sub('-rbundler/setup', '')
-    end
+      tmp_gemfile_path = tmp_dir.join("Gemfile")
+      tmp_gemfile_lock_path = tmp_dir.join("Gemfile.lock")
 
-    @bundler = LanguagePack::Helpers::BundlerWrapper.new
-  end
+      expect(tmp_gemfile_lock_path.read).to match("BUNDLED")
 
-  after(:each) do
-    if ENV['RUBYOPT']
-      ENV['RUBYOPT'] = @original_rubyopt
-    end
+      gemfile_lock = LanguagePack::Helpers::GemfileLock.new(contents: tmp_gemfile_lock_path.read)
+      wrapper = LanguagePack::Helpers::BundlerWrapper.new(
+        bundler_path: Dir.mktmpdir,
+        bundler_version: gemfile_lock.bundler.version,
+        gemfile_path: tmp_gemfile_path
+      )
 
-    @bundler.clean
-  end
-
-  it "detects windows gemfiles" do
-    Hatchet::App.new("rails4_windows_mri193").in_directory do |dir|
-      expect(@bundler.install.windows_gemfile_lock?).to be_truthy
-    end
-  end
-
-  describe "when executing bundler" do
-    before do
-      @bundler.install
-    end
-
-    it "handles apps with ruby versions locked in Gemfile.lock" do
-      Hatchet::App.new("problem_gemfile_version").in_directory do |dir|
-        expect(@bundler.ruby_version).to eq("ruby-2.3.0-p0")
-
-        ruby_version = LanguagePack::RubyVersion.new(@bundler.ruby_version, is_new: true)
-        expect(ruby_version.version_for_download).to eq("ruby-2.3.0")
-      end
-    end
-
-    it "handles JRuby pre gemfiles" do
-      Hatchet::App.new("jruby-minimal").in_directory do |dir|
-        expect(@bundler.ruby_version).to eq("ruby-2.3.1-p0-jruby-9.1.7.0")
-      end
-    end
-
-    it "handles MRI patchlevel gemfiles" do
-      Hatchet::App.new("mri_193_p547").in_directory do |dir|
-        expect(@bundler.ruby_version).to eq("ruby-1.9.3-p547")
-      end
+      expect(wrapper.version).to eq("2.0.2")
     end
   end
 end

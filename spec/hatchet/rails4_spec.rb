@@ -1,70 +1,60 @@
-require_relative '../spec_helper'
+require_relative "../spec_helper"
 
-describe "Rails 4.0.x" do
-  it "should detect rails successfully" do
-    Hatchet::App.new('rails4-manifest').in_directory do
-      expect(LanguagePack::Rails4.use?).to eq(true)
-    end
-    Hatchet::App.new('rails4-manifest').in_directory do
-      expect(LanguagePack::Rails3.use?).to eq(false)
-    end
-  end
+describe "Rails 4.x" do
+  it "should be able to run a migration without heroku specific database.yml" do
+    skip("Need RAILS_LTS_CREDS env var set") unless ENV["RAILS_LTS_CREDS"]
 
-  it "should skip asset compilation when deployed with manifest file" do
-    Hatchet::Runner.new("rails4-manifest").deploy do |app, heroku|
-      expect(app.output).to include("Detected manifest file, assuming assets were compiled locally")
-      expect(app.output).not_to match("Include 'rails_12factor' gem to enable all platform features")
-    end
-  end
+    Hatchet::Runner.new("rails42_default_ruby", config: rails_lts_config, stack: rails_lts_stack).tap do |app|
+      app.before_deploy do
+        set_lts_ruby_version
+        set_bundler_version(version: :default)
+      end
+      app.deploy do
+        # it Don't over-write database.yml
+        expect(app.output).not_to include("Writing config/database.yml to read from DATABASE_URL")
 
-  it "detects new manifest file (sprockets 3.x: .sprockets-manifest-<digest>.json)" do
-    Hatchet::Runner.new("rails42_sprockets3_manifest").deploy do |app, heroku|
-      expect(app.output).to include("Detected manifest file, assuming assets were compiled locally")
+        # it sets RAILS_SERVE_STATIC_FILES env var
+        output = app.run("rails runner 'puts ENV[%Q{RAILS_SERVE_STATIC_FILES}].present?'")
+        expect(output).to match(/true/)
+      end
     end
   end
 
-  it "upgraded from 3 to 4 missing ./bin still works" do
-    Hatchet::Runner.new("rails3-to-4-no-bin").deploy do |app, heroku|
-      expect(app.output).to include("Asset precompilation completed")
+  it "should skip asset compilation when deployed with NEW manifest file" do
+    skip("Need RAILS_LTS_CREDS env var set") unless ENV["RAILS_LTS_CREDS"]
 
-      expect(app.output).to match("WARNING")
-      expect(app.output).to match("Include 'rails_12factor' gem to enable all platform features")
+    Hatchet::Runner.new("rails42_default_ruby", config: rails_lts_config, stack: rails_lts_stack).tap do |app|
+      app.before_deploy do
+        set_lts_ruby_version
+        set_bundler_version(version: :default)
+        Pathname("public/assets/manifest-ccf61eade4793995271564a4767ce6b6.json").tap { |p|
+          p.dirname.mkpath
+          FileUtils.touch(p)
+        }
+      end
 
-      output = app.run("rails runner 'puts %Q{hello} + %Q{world}'")
-      expect(output).to match('helloworld')
+      app.deploy do
+        expect(app.output).to include("Detected manifest file, assuming assets were compiled locally")
+      end
     end
   end
 
-  # it "works with windows" do
-  #   pending("failing due to free dynos not being able to have more than 1 process type")
-  #   Hatchet::Runner.new("rails4_windows_mri193").deploy do |app, heroku|
-  #     result = app.run("rails -v")
-  #     expect(result).to match("4.0.0")
-  #     result = app.run("rake -T")
-  #     expect(result).to match("assets:precompile")
+  it "should skip asset compilation when deployed with OLD manifest file" do
+    skip("Need RAILS_LTS_CREDS env var set") unless ENV["RAILS_LTS_CREDS"]
 
-  #     result = app.run("bundle show rails")
-  #     expect(result).to match("rails-4.0.0")
-  #     expect(app.output).to match("Removing `Gemfile.lock`")
+    Hatchet::Runner.new("rails42_default_ruby", config: rails_lts_config, stack: rails_lts_stack).tap do |app|
+      app.before_deploy do
+        set_lts_ruby_version
+        set_bundler_version(version: :default)
+        Pathname("public/assets/.sprockets-manifest-040763ccc5036260c52c6adcf77d73f7.json").tap { |p|
+          p.dirname.mkpath
+          FileUtils.touch(p)
+        }
+      end
 
-  #     before_final_warnings = app.output.split("Bundle completed").first
-  #     expect(before_final_warnings).to match("Removing `Gemfile.lock`")
-  #   end
-  # end
-
-  it "fails compile if assets:precompile fails" do
-    Hatchet::Runner.new("rails4-fail-assets-compile", allow_failure: true).deploy do |app, heroku|
-      expect(app.output).to include("raising on assets:precompile on purpose")
-      expect(app).not_to be_deployed
-    end
-  end
-
-  it "should not override user settings" do
-    app = Hatchet::Runner.new("rails4-env-assets-compile")
-    app.setup!
-    app.set_config("RAILS_ENV" => "staging")
-    app.deploy do |a, heroku|
-      expect(a.output).to include("w00t")
+      app.deploy do
+        expect(app.output).to include("Detected manifest file, assuming assets were compiled locally")
+      end
     end
   end
 end
