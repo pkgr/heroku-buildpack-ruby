@@ -1,0 +1,25 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # 00:00 UTC, which is 02:00 in Paris during DST and 01:00 otherwise.
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Sync latest upstream tag
+        env:
+          CHERRY_PICK_COMMIT: cfffff57adcc81587497e069c2107d594788b2b3
+          UPSTREAM_URL: https://github.com/heroku/heroku-buildpack-ruby.git
+        run: ./.github/scripts/sync-upstream.sh
