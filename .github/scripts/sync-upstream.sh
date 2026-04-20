@@ -52,6 +52,28 @@ trap 'rm -rf "$tmpdir"' EXIT
 git archive "refs/tags/${latest_tag}" | tar -x -C "$tmpdir"
 rsync -a --delete --exclude='.git' --exclude='.github' "$tmpdir"/ ./
 
+if [[ -f lib/language_pack.rb ]]; then
+  python3 <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path("lib/language_pack.rb")
+content = path.read_text()
+content, replacements = re.subn(
+    r'(^\s*stack\s*=\s*)ENV\.fetch\("STACK"\)',
+    r'\1ENV.fetch("STACK", "")',
+    content,
+    count=1,
+    flags=re.MULTILINE,
+)
+if replacements != 1:
+    print('Could not update STACK default in lib/language_pack.rb.', file=sys.stderr)
+    sys.exit(1)
+path.write_text(content)
+PY
+fi
+
 git add -A
 if git diff --cached --quiet; then
   echo "No content changes detected while syncing ${latest_tag} onto ${SOURCE_REF}."
