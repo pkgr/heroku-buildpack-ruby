@@ -30,8 +30,17 @@ fi
 branch_name="${latest_tag}-1"
 
 if git ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
-  echo "Branch ${branch_name} already exists on origin."
-  exit 1
+  warning_message="Branch ${branch_name} already exists on origin. Skipping sync."
+  echo "::warning::${warning_message}"
+  echo "${warning_message}"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      echo "## Sync Upstream"
+      echo
+      echo "- Warning: ${warning_message}"
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
+  exit 0
 fi
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
