@@ -4,11 +4,17 @@ class LanguagePack::Helpers::Nodebin
   NODE_VERSION = "24.13.0"
   YARN_VERSION = "1.22.22"
 
-  def self.hardcoded_node_lts(arch:)
+  def self.hardcoded_node_lts(arch: )
+    version = case ENV.fetch("TARGET")
+    when "ubuntu:18.04", "ubuntu:16.04", "el:7", "sles:12"
+      "16.18.1"
+    else
+      NODE_VERSION
+    end
     arch = "x64" if arch == "amd64"
     {
-      "number" => NODE_VERSION,
-      "url" => "https://nodejs.org/download/release/v#{NODE_VERSION}/node-v#{NODE_VERSION}-linux-#{arch}.tar.gz"
+      "number" => version,
+      "url"    => "https://nodejs.org/dist/v#{version}/node-v#{version}-linux-#{arch}.tar.gz"
     }
   end
 
