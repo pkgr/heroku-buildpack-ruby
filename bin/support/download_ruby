@@ -1,14 +1,69 @@
-#!/usr/bin/env ruby
+#!/usr/bin/env bash
 
-# This script will download a version of Ruby for the buildpack to use
-# and put it in the `ARGV.first` location.
-$stdout.sync = true
+# Downloads a bootstrap copy of Ruby for execution of the buildpack
+# this is needed so we can totally control the Ruby version and are
+# not dependant on the Ruby version of the stack image
 
-$:.unshift File.expand_path("../../../lib", __FILE__)
-require "language_pack"
+# fail hard
+set -o pipefail
+# fail harder
+set -eu
 
-DEFAULT_STACK = "cedar-14"
+BIN_DIR=$1
+RUBY_BOOTSTRAP_DIR=$2
 
-installer    = LanguagePack::Installers::HerokuRubyInstaller.new(ENV['STACK'] || DEFAULT_STACK)
-ruby_version = LanguagePack::RubyVersion.new("ruby-#{LanguagePack::RubyVersion::DEFAULT_VERSION_NUMBER}")
-installer.fetch_unpack(ruby_version, ARGV[0])
+# Stack is set by codon, listed here so shellcheck knows about it
+STACK=${STACK:-}
+
+curl_retry_on_18() {
+  local ec=18;
+  local attempts=0;
+  while (( ec == 18 && attempts++ < 3 )); do
+    curl "$@" # -C - would return code 33 if unsupported by server
+    ec=$?
+  done
+  return $ec
+}
+
+ruby_url() {
+  local stack=$1
+  local version=$2
+
+  if [ "$stack" == "heroku-22" ]; then
+    echo "${BUILDPACK_VENDOR_URL:-https://heroku-buildpack-ruby.s3.dualstack.us-east-1.amazonaws.com}/$stack/ruby-$version.tgz"
+  else
+    local arch
+    arch=$(dpkg --print-architecture)
+    echo "${BUILDPACK_VENDOR_URL:-https://heroku-buildpack-ruby.s3.dualstack.us-east-1.amazonaws.com}/$stack/$arch/ruby-$version.tgz"
+  fi
+}
+
+# Pull ruby version out of buildpack.toml to be used with bootstrapping
+regex=".*ruby_version = [\'\"]([0-9]+\.[0-9]+\.[0-9]+)[\'\"].*"
+if [[ $(cat "$BIN_DIR/../buildpack.toml") =~ $regex ]]
+  then
+    heroku_buildpack_ruby_url=$(ruby_url "$STACK" "${BASH_REMATCH[1]}")
+  else
+    heroku_buildpack_ruby_url=""
+    echo "Could not detect ruby version to bootstrap"
+    exit 1
+fi
+
+mkdir -p "$RUBY_BOOTSTRAP_DIR"
+
+if curl_retry_on_18 --fail --show-error --retry 3 --retry-connrefused --connect-timeout "${CURL_CONNECT_TIMEOUT:-3}" --silent --location -o "$RUBY_BOOTSTRAP_DIR/ruby.tgz" "$heroku_buildpack_ruby_url"; then
+  :
+else
+cat<<EOF
+  Failed to download a Ruby executable for bootstrapping!
+
+  This is most likely a temporary internal error. If the problem
+  persists, make sure that you are not running a custom or forked
+  version of the Heroku Ruby buildpack which may need updating.
+
+  url: $heroku_buildpack_ruby_url
+EOF
+  exit 1
+fi
+
+tar xzf "$RUBY_BOOTSTRAP_DIR/ruby.tgz" -C "$RUBY_BOOTSTRAP_DIR"

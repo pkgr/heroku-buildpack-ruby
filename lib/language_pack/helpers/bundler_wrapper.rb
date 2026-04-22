@@ -1,53 +1,74 @@
-require 'language_pack/fetcher'
+# frozen_string_literal: true
 
+require "json"
+
+# This class is responsible for installing and maintaining a
+# reference to bundler. It contains access to bundler internals
+# that are used to introspect a project such as detecting presence
+# of gems and their versions.
+#
+# Example:
+#
+#   bundler = LanguagePack::Helpers::BundlerWrapper.new(bundler_path: "vendor/bundle/ruby/3.2.0", bundler_version: "2.5.7")
+#   bundler.install
+#   bundler.version                 => "2.5.23"
+#   bundler.dir_name                => "bundler-2.5.23"
+#   bundler.has_gem?("railties")    => true
+#   bundler.gem_version("railties") => "5.2.2"
+#   bundler.clean
+#
+# IMPORTANT: Calling `BundlerWrapper#install` on this class mutates the environment variable
+# ENV['BUNDLE_GEMFILE']. If you're calling in a test context (or anything outside)
+# of an isolated dyno, you must call `BundlerWrapper#clean`. To reset the environment
+# variable:
+#
+#   bundler = LanguagePack::Helpers::BundlerWrapper.new(bundler_path: "vendor/bundle/ruby/3.2.0", bundler_version: "2.5.7")
+#   bundler.install
+#   bundler.clean # <========== IMPORTANT =============
+#
 class LanguagePack::Helpers::BundlerWrapper
   include LanguagePack::ShellHelpers
 
-  class GemfileParseError < BuildpackError
-    def initialize(error)
-      msg = "There was an error parsing your Gemfile, we cannot continue\n"
-      msg << error
-      super msg
-    end
-  end
+  DEFAULT_VERSION = "2.5.23"
 
-  VENDOR_URL         = LanguagePack::Base::VENDOR_URL                # coupling
-  DEFAULT_FETCHER    = LanguagePack::Fetcher.new(VENDOR_URL)         # coupling
-  BUNDLER_DIR_NAME   = LanguagePack::Ruby::BUNDLER_GEM_PATH          # coupling
-  BUNDLER_PATH       = File.expand_path("../../../../tmp/#{BUNDLER_DIR_NAME}", __FILE__)
-  GEMFILE_PATH       = Pathname.new "./Gemfile"
+  attr_reader :bundler_path
 
-  attr_reader   :bundler_path
+  def initialize(
+    bundler_path:,
+    bundler_version:,
+    gemfile_path: Pathname.new("./Gemfile"),
+    report: HerokuBuildReport::GLOBAL
+  )
+    @report = report
+    @gemfile_path = gemfile_path
+    @gemfile_lock_path = Pathname.new("#{@gemfile_path}.lock")
 
-  def initialize(options = {})
-    @fetcher              = options[:fetcher]      || DEFAULT_FETCHER
-    @bundler_tmp          = Dir.mktmpdir
-    @bundler_path         = options[:bundler_path] || File.join(@bundler_tmp, "#{BUNDLER_DIR_NAME}")
-    @gemfile_path         = options[:gemfile_path] || GEMFILE_PATH
-    @bundler_tar          = options[:bundler_tar]  || "#{BUNDLER_DIR_NAME}.tgz"
-    @gemfile_lock_path    = "#{@gemfile_path}.lock"
-    @orig_bundle_gemfile  = ENV['BUNDLE_GEMFILE']
-    ENV['BUNDLE_GEMFILE'] = @gemfile_path.to_s
-    @path                 = Pathname.new "#{@bundler_path}/gems/#{BUNDLER_DIR_NAME}/lib"
+    dot_ruby_version_file = @gemfile_lock_path.join("..").join(".ruby-version")
+    @report.capture(
+      "ruby.dot_ruby_version" => dot_ruby_version_file.exist? ? dot_ruby_version_file.read&.strip : nil
+    )
+    @version = bundler_version
+    parts = @version.split(".")
+    @report.capture(
+      "bundler.version_installed" => @version,
+      "bundler.major" => parts&.shift,
+      "bundler.minor" => parts&.shift,
+      "bundler.patch" => parts&.shift
+    )
+    @dir_name = "bundler-#{@version}"
+
+    @bundler_path = Pathname(bundler_path)
+    @orig_bundle_gemfile = ENV["BUNDLE_GEMFILE"]
   end
 
   def install
+    ENV["BUNDLE_GEMFILE"] = @gemfile_path.to_s
     fetch_bundler
-    $LOAD_PATH << @path
-    require "bundler"
     self
   end
 
   def clean
-    ENV['BUNDLE_GEMFILE'] = @orig_bundle_gemfile
-    FileUtils.remove_entry_secure(@bundler_tmp) if Dir.exist?(@bundler_tmp)
-
-    if LanguagePack::Ruby::BUNDLER_VERSION  == "1.7.12"
-      # Hack to cleanup after pre 1.8 versions of bundler. See https://github.com/bundler/bundler/pull/3277/
-      Dir["#{Dir.tmpdir}/bundler*"].each do |dir|
-        FileUtils.remove_entry_secure(dir) if Dir.exist?(dir) && File.stat(dir).writable?
-      end
-    end
+    ENV["BUNDLE_GEMFILE"] = @orig_bundle_gemfile
   end
 
   def has_gem?(name)
@@ -55,78 +76,67 @@ class LanguagePack::Helpers::BundlerWrapper
   end
 
   def gem_version(name)
-    instrument "ruby.gem_version" do
-      if spec = specs[name]
-        spec.version
-      end
-    end
-  end
-
-  # detects whether the Gemfile.lock contains the Windows platform
-  # @return [Boolean] true if the Gemfile.lock was created on Windows
-  def windows_gemfile_lock?
-    platforms.detect do |platform|
-      /mingw|mswin/.match(platform.os) if platform.is_a?(Gem::Platform)
-    end
+    specs[name]
   end
 
   def specs
-    @specs     ||= lockfile_parser.specs.each_with_object({}) {|spec, hash| hash[spec.name] = spec }
+    @specs ||= specs_from_lockfile
   end
 
-  def platforms
-    @platforms ||= lockfile_parser.platforms
+  attr_reader :version
+
+  attr_reader :dir_name
+
+  private def fetch_bundler
+    return true if Dir.exist?(bundler_path.join("gems", dir_name))
+
+    topic("Installing bundler #{@version}")
+
+    # Install directory structure (as of Bundler 2.1.4):
+    # - cache
+    # - bin
+    # - gems
+    # - specifications
+    # - build_info
+    # - extensions
+    # - doc
+    FileUtils.mkdir_p(bundler_path)
+    run!("GEM_HOME=#{bundler_path} gem install bundler --version #{@version} --no-document --env-shebang")
   end
 
-  def version
-    Bundler::VERSION
+  # Runs a Ruby subprocess to parse the Gemfile.lock and return specs as a hash.
+  private def specs_from_lockfile
+    LanguagePack::Helpers::LockfileShellParser.call(lockfile_path: @gemfile_lock_path)
   end
 
-  def instrument(*args, &block)
-    LanguagePack::Instrument.instrument(*args, &block)
-  end
+  def self.resolve_bundler_version(gemfile_lock:, warn_io:)
+    version = gemfile_lock.bundler.version
+    if version
+      version
+    else
+      warn_io.warn(<<~WARNING)
+        Using default bundler version `#{DEFAULT_VERSION}`
 
-  def ruby_version
-    instrument 'detect_ruby_version' do
-      env = { "PATH"     => "#{bundler_path}/bin:#{ENV['PATH']}",
-              "RUBYLIB"  => File.join(bundler_path, "gems", BUNDLER_DIR_NAME, "lib"),
-              "GEM_PATH" => "#{bundler_path}:#{ENV["GEM_PATH"]}"
-            }
-      command = "bundle platform --ruby"
+        The Ruby buildpack uses the `BUNDLED WITH` value in your `Gemfile.lock` to determine the version
+        of bundler to install. Your `Gemfile.lock` does not contain this section, so a default version
+        of bundler will be installed instead.
 
-      # Silently check for ruby version
-      output  = run_stdout(command, user_env: true, env: env)
+        Heroku recommends that you have both a `RUBY VERSION` and `BUNDLED WITH` version listed in your `Gemfile.lock`.
+        You can add it to your project by running:
 
-      # If there's a gem in the Gemfile (i.e. syntax error) emit error
-      raise GemfileParseError.new(run("bundle check", user_env: true, env: env)) unless $?.success?
-      if output.match(/No ruby version specified/)
-        ""
-      else
-        output.chomp.sub('(', '').sub(')', '').sub(/(p-?\d+)/, ' \1').split.join('-')
-      end
-    end
-  end
+        ```
+        $ bundle update --bundler
+        ```
 
-  def lockfile_parser
-    @lockfile_parser ||= parse_gemfile_lock
-  end
+        Commit the results to git before redeploying:
 
-  private
-  def fetch_bundler
-    instrument 'fetch_bundler' do
-      return true if Dir.exists?(bundler_path)
-      FileUtils.mkdir_p(bundler_path)
-      Dir.chdir(bundler_path) do
-        @fetcher.fetch_untar(@bundler_tar)
-      end
-      Dir["bin/*"].each {|path| `chmod 755 #{path}` }
-    end
-  end
+        ```
+        $ git add Gemfile.lock
+        $ git commit -m "Add BUNDLED WITH version"
+        ```
+      WARNING
 
-  def parse_gemfile_lock
-    instrument 'parse_bundle' do
-      gemfile_contents = File.read(@gemfile_lock_path)
-      Bundler::LockfileParser.new(gemfile_contents)
+      DEFAULT_VERSION
     end
   end
 end
