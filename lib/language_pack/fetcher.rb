@@ -6,64 +6,51 @@ module LanguagePack
     class FetchError < StandardError; end
 
     include ShellHelpers
-    CDN_YAML_FILE = File.expand_path("../../../config/cdn.yml", __FILE__)
 
-    def initialize(host_url, stack = nil)
-      @config   = load_config
-      @host_url = fetch_cdn(host_url)
+    def initialize(host_url, stack: nil, arch: nil)
+      @host_url = Pathname.new(host_url)
+      # File.basename prevents accidental directory traversal
       @host_url += File.basename(stack) if stack
+      @host_url += File.basename(arch) if arch
+    end
+
+    def exists?(path, max_attempts = 1)
+      curl = curl_command("--head #{@host_url.join(path)}")
+      run!(curl, error_class: FetchError, max_attempts: max_attempts, silent: true)
+    rescue FetchError
+      false
     end
 
     def fetch(path)
-      curl = curl_command("-O #{@host_url.join(path)}")
+      curl = curl_command("--remote-name #{@host_url.join(path)}")
       run!(curl, error_class: FetchError)
     end
 
-    def fetch_untar(path, files_to_extract = nil)
-      curl = curl_command("#{@host_url.join(path)} -s -o")
-      run!("#{curl} - | tar zxf - #{files_to_extract}", error_class: FetchError)
+    def fetch_untar(path, files_to_extract = nil, strip_components: 0)
+      curl = curl_command("#{@host_url.join(path)} --no-progress-meter --output")
+      tar_cmd = ["tar", "--strip-components=#{strip_components}", "-xzf", "- #{files_to_extract}"]
+      run! "#{curl} - | #{tar_cmd.join(" ")}",
+        error_class: FetchError,
+        max_attempts: 3
     end
 
     def fetch_bunzip2(path, files_to_extract = nil)
-      curl = curl_command("#{@host_url.join(path)} -s -o")
+      curl = curl_command("#{@host_url.join(path)} --no-progress-meter --output")
       run!("#{curl} - | tar jxf - #{files_to_extract}", error_class: FetchError)
     end
 
     private
-    def curl_command(command)
-      binary, *rest = command.split(" ")
-      buildcurl_mapping = {
-        "ruby" => /^ruby-(.+)$/,
-        "rubygem-bundler" => /^bundler-(.+)$/,
-        "libyaml" => /^libyaml-(.+)$/
-      }
-      buildcurl_mapping.each do |k,v|
-        if File.basename(binary, ".tgz") =~ v
-          return "set -o pipefail; curl -L --get --fail --retry 3 #{buildcurl_url} -d recipe=#{k} -d version=#{$1} -d target=$TARGET #{rest.join(" ")}"
-        end
-      end
-      "set -o pipefail; curl -L --fail --retry 5 --retry-delay 1 --connect-timeout #{curl_connect_timeout_in_seconds} --max-time #{curl_timeout_in_seconds} #{command}"
-    end
 
-    def buildcurl_url
-      ENV['BUILDCURL_URL'] || "buildcurl.com"
+    def curl_command(command)
+      "set -o pipefail; curl --location --fail --retry 5 --retry-delay 1 --connect-timeout #{curl_connect_timeout_in_seconds} --max-time #{curl_timeout_in_seconds} #{command}"
     end
 
     def curl_timeout_in_seconds
-      env('CURL_TIMEOUT') || 30
+      env("CURL_TIMEOUT") || 30
     end
 
     def curl_connect_timeout_in_seconds
-      env('CURL_CONNECT_TIMEOUT') || 3
-    end
-
-    def load_config
-      YAML.load_file(CDN_YAML_FILE) || {}
-    end
-
-    def fetch_cdn(url)
-      url = @config[url] || url
-      Pathname.new(url)
+      env("CURL_CONNECT_TIMEOUT") || 3
     end
   end
 end

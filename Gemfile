@@ -1,14 +1,18 @@
 source "https://rubygems.org"
+git_source(:github) { |repo| "https://github.com/#{repo}.git" }
+
+ruby "3.3.9"
 
 group :development, :test do
-  gem "heroku_hatchet", "~>3.0.1"
+  gem "toml-rb"
+  gem "heroku_hatchet"
   gem "rspec-core"
   gem "rspec-expectations"
   gem "excon"
   gem "rake"
-  gem "parallel_tests"
-  gem 'rspec-retry'
-  gem "netrc"
-  gem "git", github: "hone/ruby-git", branch: "master"
-  gem 'json', '~> 2.0.2'
+  gem "parallel_split_test"
+  gem "rspec-retry"
+  gem "json"
+  gem "redis"
+  gem "standard"
 end

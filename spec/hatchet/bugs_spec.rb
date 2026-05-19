@@ -1,25 +1,47 @@
-require_relative '../spec_helper'
+require_relative "../spec_helper"
 
 describe "Bugs" do
-  it "nokogiri should use the system libxml2" do
-    Hatchet::Runner.new("nokogiri_160").deploy do |app|
-      expect(app.output).to match("nokogiri")
-      expect(app.run("bundle exec nokogiri -v")).not_to include("WARNING: Nokogiri was built against LibXML version")
-    end
-  end
-
   context "database connections" do
     it "fails with better error message" do
-      Hatchet::Runner.new("connect_to_database_on_first_push", allow_failure: true).deploy do |app|
-        expect(app.output).to match("https://devcenter.heroku.com/articles/pre-provision-database")
+      Hatchet::Runner.new("ruby-getting-started", allow_failure: true).tap do |app|
+        app.before_deploy do
+          Pathname("Rakefile").write(<<~EOM)
+            require 'bundler'
+            Bundler.require(:default)
+
+            require 'active_record'
+
+            task "assets:precompile" do
+              # Try to connect to a database that doesn't exist yet
+              ActiveRecord::Base.establish_connection
+              ActiveRecord::Base.connection.execute("")
+            end
+          EOM
+        end
+
+        app.deploy do
+          expect(app.output).to match("https://devcenter.heroku.com/articles/pre-provision-database")
+        end
+      end
+    end
+
+    it "does not generate an incorrect DATABASE_URL if adapter is not known" do
+      Hatchet::Runner.new("rails_8_1_trilogy_db_minimal").tap do |app|
+        app.deploy do
+          # Works
+        end
       end
     end
   end
 
-  context "bad versions" do
-    it "fails with better error message" do
-      Hatchet::Runner.new("bad_ruby_version", allow_failure: true).deploy do |app|
-        expect(app.output).to match("devcenter.heroku.com/articles/ruby-support")
+  it "detect fails when no Gemfile is present" do
+    Hatchet::Runner.new("default_ruby", allow_failure: true).tap do |app|
+      app.before_deploy do
+        FileUtils.rm("Gemfile")
+      end
+      app.deploy do |app|
+        expect(app.output).to include("A Ruby app on Heroku must have a 'Gemfile' and 'Gemfile.lock' in the root directory of its source code.")
+        expect(app).not_to be_deployed
       end
     end
   end
