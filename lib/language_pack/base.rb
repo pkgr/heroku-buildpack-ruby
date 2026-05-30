@@ -31,7 +31,7 @@ class LanguagePack::Base
     @new_app = new_app
     @ruby_version = ruby_version
     @warn_io = warn_io
-    @stack = ENV.fetch("STACK")
+    @stack = ENV.fetch("STACK", "")
     @cache = LanguagePack::Cache.new(cache_path)
     @metadata = LanguagePack::Metadata.new(cache_path: cache_path)
     @bundler_cache = LanguagePack::BundlerCache.new(@cache, @stack)
@@ -40,6 +40,7 @@ class LanguagePack::Base
   end
 
   def self.get_arch
+    return "amd64" # packager currently only supports amd64
     command = "dpkg --print-architecture"
     arch = run!(command, silent: true).strip
 
