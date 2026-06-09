@@ -1,4 +1,4 @@
-require "language_pack/shell_helpers"
+require "language_pack/shell_helpers" # Holds BuildpackError
 
 module LanguagePack
   class RubyVersion
@@ -8,77 +8,114 @@ module LanguagePack
         msg << output
         msg << "Can not parse Ruby Version:\n"
         msg << "Valid versions listed on: https://devcenter.heroku.com/articles/ruby-support\n"
-        super msg
+        super(msg)
       end
     end
 
-    DEFAULT_VERSION_NUMBER = "2.4.1"
-    DEFAULT_VERSION        = "ruby-#{DEFAULT_VERSION_NUMBER}"
-    LEGACY_VERSION_NUMBER  = "1.9.2"
-    LEGACY_VERSION         = "ruby-#{LEGACY_VERSION_NUMBER}"
-    RUBY_VERSION_REGEX     = %r{
-        (?<ruby_version>\d+\.\d+\.\d+){0}
-        (?<patchlevel>p-?\d+){0}
-        (?<engine>\w+){0}
-        (?<engine_version>.+){0}
+    BOOTSTRAP_VERSION_NUMBER = "3.3.9".freeze
+    DEFAULT_VERSION_NUMBER = "3.3.9".freeze
+    DEFAULT_VERSION = "ruby-#{DEFAULT_VERSION_NUMBER}".freeze
 
-        ruby-\g<ruby_version>(-\g<patchlevel>)?(-\g<engine>-\g<engine_version>)?
-      }x
+    # String formatted `<major>.<minor>.<patch>` for Ruby and JRuby
+    attr_reader :ruby_version,
+      # `engine` is `:ruby` or `:jruby`
+      :engine,
+      # `engine_version` is the Jruby version or for MRI it is the same as `ruby_version`
+      # i.e. `<major>.<minor>.<patch>`
+      :engine_version,
+      # Pre-release identifier e.g. "rc1", "preview2", or nil for stable releases
+      :pre
 
-    attr_reader :set, :version, :version_without_patchlevel, :patchlevel, :engine, :ruby_version, :engine_version
-    include LanguagePack::ShellHelpers
-
-    def initialize(bundler_output, app = {})
-      @set            = nil
-      @bundler_output = bundler_output
-      @app            = app
-      set_version
-      parse_version
-
-      @version_without_patchlevel = @version.sub(/-p-?\d+/, '')
-    end
-
-    # https://github.com/bundler/bundler/issues/4621
-    def version_for_download
-      if rbx?
-        "rubinius-#{engine_version}"
-      elsif patchlevel_is_significant? && @patchlevel && @patchlevel.sub(/p/, '').to_i >= 0
-        @version
+    def self.from_gemfile_lock(ruby:, last_version: nil)
+      if ruby.empty?
+        default(last_version: last_version)
       else
-        version_without_patchlevel
+        new(
+          pre: ruby.pre,
+          engine: ruby.engine,
+          default: false,
+          ruby_version: ruby.ruby_version,
+          engine_version: ruby.engine_version
+        )
       end
     end
 
-    # Before Ruby 2.1 patch releases were done via patchlevel i.e. 1.9.3-p426 versus 1.9.3-p448
-    # With 2.1 and above patches are released in the "minor" version instead i.e. 2.1.0 versus 2.1.1
-    def patchlevel_is_significant?
-      !jruby? && Gem::Version.new(self.ruby_version) <= Gem::Version.new("2.1")
+    def self.default(last_version:)
+      ruby_version = last_version&.split("-")&.last || DEFAULT_VERSION_NUMBER
+      new(
+        pre: nil,
+        engine: :ruby,
+        default: true,
+        ruby_version: ruby_version,
+        engine_version: ruby_version
+      )
     end
 
-    def rake_is_vendored?
-      Gem::Version.new(self.ruby_version) >= Gem::Version.new("1.9")
+    def initialize(
+      pre:,
+      engine:,
+      default:,
+      ruby_version:,
+      engine_version:
+    )
+      @pre = pre
+      @engine = engine
+      @default = default
+      @ruby_version = ruby_version
+      @engine_version = engine_version
+    end
+
+    # Also used as for metrics to track unique installs
+    # i.e. `ruby-3.4.2`
+    def version_for_download
+      if @engine == :jruby
+        "ruby-#{ruby_version}-jruby-#{engine_version}"
+      else
+        "ruby-#{engine_version_full}"
+      end
+    end
+
+    # Full qualifier for the version including pre-release information
+    # i.e. `3.5.0.preview1` or `3.5.0` or `3.5.0.rc1` for ruby
+    # i.e. `9.4.9.0` for jruby
+    def engine_version_full
+      if @engine == :jruby
+        engine_version
+      elsif @pre
+        "#{engine_version}.#{@pre}"
+      else
+        engine_version.to_s
+      end
+    end
+
+    # Ruby versioned bundler directory
+    #
+    # When installing gems via `BUNDLE_DEPLOYMENT=1 bundle install`, they're installed into a versioned directory based on the ruby version.
+    #
+    # This becomes the location of GEM_PATH on disk https://www.schneems.com/2014/04/15/gem-path.html.
+    # - Executables are at bundler_directory.join("bin")
+    # - Gems are at bundler_directory.join("gems")
+    #
+    # For example:
+    #
+    # - Ruby 3.4.7 would be "vendor/bundle/ruby/3.4.0"
+    # - JRuby 9.4.14.0 would be "vendor/bundle/jruby/3.1.0" (As it implements Ruby 3.1.7 spec)
+    def bundler_directory
+      "vendor/bundle/#{engine}/#{major}.#{minor}.0"
+    end
+
+    def file_name
+      "#{version_for_download}.tgz"
     end
 
     def default?
-      @version == none
+      @default
     end
 
     # determine if we're using jruby
     # @return [Boolean] true if we are and false if we aren't
     def jruby?
       engine == :jruby
-    end
-
-    # determine if we're using rbx
-    # @return [Boolean] true if we are and false if we aren't
-    def rbx?
-      engine == :rbx
-    end
-
-    # determines if a build ruby is required
-    # @return [Boolean] true if a build ruby is required
-    def build?
-      engine == :ruby && %w(1.8.7 1.9.2).include?(ruby_version)
     end
 
     # convert to a Gemfile ruby DSL incantation
@@ -91,35 +128,32 @@ module LanguagePack
       end
     end
 
-    private
-
-    def none
-      if @app[:is_new]
-        DEFAULT_VERSION
-      elsif @app[:last_version]
-        @app[:last_version]
-      else
-        LEGACY_VERSION
-      end
+    def major
+      @ruby_version.split(".")[0].to_i
     end
 
-    def set_version
-      if @bundler_output.empty?
-        @set     = false
-        @version = none
-      else
-        @set     = :gemfile
-        @version = @bundler_output
-      end
+    def minor
+      @ruby_version.split(".")[1].to_i
     end
 
-    def parse_version
-      md = RUBY_VERSION_REGEX.match(version)
-      raise BadVersionError.new("'#{version}' is not valid") unless md
-      @ruby_version   = md[:ruby_version]
-      @patchlevel     = md[:patchlevel]
-      @engine_version = md[:engine_version] || @ruby_version
-      @engine         = (md[:engine]        || :ruby).to_sym
+    def patch
+      @ruby_version.split(".")[2].to_i
+    end
+
+    # Returns the next logical version in the minor series
+    # for example if the current ruby version is
+    # `ruby-2.3.1` then then `next_logical_version(1)`
+    # will produce `ruby-2.3.2`.
+    def next_logical_version(increment = 1)
+      "ruby-#{major}.#{minor}.#{patch + increment}"
+    end
+
+    def next_minor_version(increment = 1)
+      "ruby-#{major}.#{minor + increment}.0"
+    end
+
+    def next_major_version(increment = 1)
+      "ruby-#{major + increment}.0.0"
     end
   end
 end
