@@ -22,7 +22,7 @@ module LanguagePack
 
   def self.call(app_path:, cache_path:, gemfile_lock:, bundle_default_without:, environment_name: "production")
     arch = LanguagePack::Base.get_arch
-    stack = ENV.fetch("STACK")
+    stack = ENV.fetch("STACK", "")
     cache = LanguagePack::Cache.new(cache_path)
     warn_io = LanguagePack::ShellHelpers::WarnIO.new
     user_env_hash = LanguagePack::ShellHelpers.user_env_hash
