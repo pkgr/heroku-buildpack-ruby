@@ -5,6 +5,8 @@ set -euo pipefail
 UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/heroku/heroku-buildpack-ruby.git}"
 PUSH_CHANGES="${PUSH_CHANGES:-1}"
 SOURCE_REF="${SOURCE_REF:-HEAD}"
+DEFAULT_RUBY_BUMP_COMMIT="${DEFAULT_RUBY_BUMP_COMMIT:-fc500664466eef57a3b457c2a5c7edbb9082013c}"
+MINIMUM_DEFAULT_RUBY_VERSION="${MINIMUM_DEFAULT_RUBY_VERSION:-3.3.11}"
 
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -65,6 +67,31 @@ if git diff --cached --quiet; then
   echo "No content changes detected while syncing ${latest_tag} onto ${SOURCE_REF}."
 else
   git commit -m "Sync upstream ${latest_tag} without workflow changes"
+fi
+
+default_ruby_version=""
+if [[ -f buildpack.toml ]]; then
+  default_ruby_version="$(
+    awk '
+      /^\[/ { in_buildpack = ($0 == "[buildpack]") }
+      in_buildpack && $0 ~ /^[[:space:]]*ruby_version[[:space:]]*=/ {
+        print
+        exit
+      }
+    ' buildpack.toml | sed -E 's/^[^=]+=[[:space:]]*["'\'']?([^"'\''[:space:]]+).*/\1/'
+  )"
+fi
+
+if [[ -z "$default_ruby_version" ]]; then
+  echo "Could not determine buildpack.toml default Ruby version. Cherry-picking ${DEFAULT_RUBY_BUMP_COMMIT}."
+  git cherry-pick "$DEFAULT_RUBY_BUMP_COMMIT"
+elif [[ "$default_ruby_version" == "$MINIMUM_DEFAULT_RUBY_VERSION" ]]; then
+  echo "buildpack.toml default Ruby version is ${default_ruby_version}; skipping ${DEFAULT_RUBY_BUMP_COMMIT}."
+elif [[ "$(printf '%s\n%s\n' "$default_ruby_version" "$MINIMUM_DEFAULT_RUBY_VERSION" | sort -V | head -n 1)" == "$default_ruby_version" ]]; then
+  echo "buildpack.toml default Ruby version ${default_ruby_version} is older than ${MINIMUM_DEFAULT_RUBY_VERSION}. Cherry-picking ${DEFAULT_RUBY_BUMP_COMMIT}."
+  git cherry-pick "$DEFAULT_RUBY_BUMP_COMMIT"
+else
+  echo "buildpack.toml default Ruby version ${default_ruby_version} is newer than ${MINIMUM_DEFAULT_RUBY_VERSION}; skipping ${DEFAULT_RUBY_BUMP_COMMIT}."
 fi
 
 python3 <<'PY'

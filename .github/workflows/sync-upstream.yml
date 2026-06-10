@@ -20,6 +20,7 @@ jobs:
 
       - name: Sync latest upstream tag
         env:
-          CHERRY_PICK_COMMIT: cfffff57adcc81587497e069c2107d594788b2b3
+          DEFAULT_RUBY_BUMP_COMMIT: fc500664466eef57a3b457c2a5c7edbb9082013c
+          MINIMUM_DEFAULT_RUBY_VERSION: 3.3.11
           UPSTREAM_URL: https://github.com/heroku/heroku-buildpack-ruby.git
         run: ./.github/scripts/sync-upstream.sh
