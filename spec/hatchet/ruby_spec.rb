@@ -1,51 +1,217 @@
-require_relative '../spec_helper'
+require_relative "../spec_helper"
 
 describe "Ruby apps" do
-  describe "bundler ruby version matcher" do
-    it "installs a version even when not present in the Gemfile.lock" do
-      Hatchet::Runner.new('bundle-ruby-version-not-in-lockfile').deploy do |app|
-        expect(app.output).to         match("2.3.1")
-        expect(app.run("ruby -v")).to match("2.3.1")
+  # https://github.com/heroku/heroku-buildpack-ruby/issues/1025
+  describe "bin/rake binstub" do
+    it "loads git gems at build time when executing `rake`" do
+      Hatchet::Runner.new("git_gemspec").tap do |app|
+        app.before_deploy do
+          File.open("Rakefile", "w+") do |f|
+            f.puts(<<~EOF)
+              task "assets:precompile" do
+                require 'mini_histogram'
+                puts "successfully loaded git gem"
+              end
+            EOF
+          end
+        end
+        app.deploy do
+          expect(app.output).to match("successfully loaded git gem")
+          expect(app.run("rake assets:precompile")).to match("successfully loaded git gem")
+        end
       end
     end
 
-    it "works even when patchfile is specified" do
-      Hatchet::Runner.new('problem_gemfile_version').deploy do |app|
-        expect(app.output).to match("2.3.0")
+    it "loads bundler into memory" do
+      Hatchet::Runner.new("default_ruby").tap do |app|
+        app.before_deploy do
+          File.open("Rakefile", "w+") do |f|
+            f.puts(<<~EOF)
+              task "assets:precompile" do
+                puts Bundler.methods
+
+                puts "bundler loaded in rake context"
+              end
+            EOF
+          end
+        end
+        app.deploy do
+          expect(app.output).to match("bundler loaded in rake context")
+          expect(app.run("rake assets:precompile")).to match("bundler loaded in rake context")
+        end
+      end
+    end
+
+    it "loads custom rake binstub" do
+      Hatchet::Runner.new("default_ruby").tap do |app|
+        app.before_deploy do
+          FileUtils.mkdir_p("bin")
+
+          File.open("bin/rake", "w+") do |f|
+            f.puts(<<~EOF)
+              #!/usr/bin/env ruby
+
+              puts "rake assets:precompile" # Needed to trigger the `rake -P` task detection
+              puts "custom rake binstub called"
+            EOF
+          end
+          FileUtils.chmod("+x", "bin/rake")
+        end
+        app.deploy do
+          expect(app.output).to match("custom rake binstub called")
+          expect(app.run("rake")).to match("custom rake binstub called")
+        end
       end
     end
   end
 
-  # describe "default WEB_CONCURRENCY" do
-  #   it "auto scales WEB_CONCURRENCY" do
-  #     pending("https://github.com/heroku/api/issues/4426")
-  #     app = Hatchet::Runner.new("default_ruby")
-  #     app.setup!
-  #     app.set_config("SENSIBLE_DEFAULTS" => "enabled")
-  #     app.deploy do |app|
-  #       app.run('echo "loaded"')
-  #       expect(app.run(:bash, 'echo "value: $WEB_CONCURRENCY"', heroku: { size: "1X" } )).to match("value: 2")
-  #       expect(app.run(:bash, 'echo "value: $WEB_CONCURRENCY"', heroku: { size: "2X" } )).to match("value: 4")
-  #       expect(app.run(:bash, 'echo "value: $WEB_CONCURRENCY"', heroku: { size: "PX" } )).to match("value: 16")
-  #     end
-  #   end
-  # end
+  describe "bad ruby version" do
+    it "gives a helpful error" do
+      Hatchet::Runner.new("default_ruby", allow_failure: true, stack: DEFAULT_STACK).tap do |app|
+        app.before_deploy do
+          set_ruby_version(version: "2.9.0.lol")
+        end
 
-  describe "Rake detection" do
-    context "default" do
-      # it "adds default process types" do
-      #   Hatchet::Runner.new('empty-procfile').deploy do |app|
-      #     app.run("console") do |console|
-      #       console.run("puts 'hello' + 'world'") {|result| expect(result).to match('helloworld')}
-      #     end
-      #   end
-      # end
+        app.deploy do |app|
+          expect(app.output).to match("The Ruby version you are trying to install does not exist: ruby-2.9.0.lol")
+        end
+      end
     end
+  end
 
-    context "Ruby 1.9+" do
-      it "runs a rake task if the gem exists" do
-        Hatchet::Runner.new('default_with_rakefile').deploy do |app, heroku|
-          expect(app.output).to include("foo")
+  describe "exporting path" do
+    it "puts local bin dir in path" do
+      before_deploy = proc do
+        FileUtils.mkdir_p("bin")
+        File.open("bin/bloop", "w+") do |f|
+          f.puts(<<~EOF)
+            #!/usr/bin/env bash
+
+            echo "bloop"
+          EOF
+        end
+        FileUtils.chmod("+x", "bin/bloop")
+
+        File.open("Rakefile", "a") do |f|
+          f.puts(<<~EOF)
+            task "run:bloop" do
+              puts `bloop`
+              raise "Could not bloop" unless $?.success?
+            end
+          EOF
+        end
+      end
+      buildpacks = [
+        :default,
+        "https://github.com/schneems/buildpack-ruby-rake-deploy-tasks"
+      ]
+      config = {"DEPLOY_TASKS" => "run:bloop"}
+      Hatchet::Runner.new("default_ruby", stack: DEFAULT_STACK, buildpacks: buildpacks, config: config, before_deploy: before_deploy).deploy do |app|
+        expect(app.output).to match("bloop")
+      end
+    end
+  end
+
+  describe "running Ruby from outside the default dir" do
+    it "works" do
+      buildpacks = [
+        :default,
+        "https://github.com/sharpstone/force_absolute_paths_buildpack",
+        "https://github.com/heroku/heroku-buildpack-inline.git"
+      ]
+      config = {FORCE_ABSOLUTE_PATHS_BUILDPACK_IGNORE_PATHS: "BUNDLE_PATH"}
+
+      Hatchet::Runner.new("default_ruby", stack: DEFAULT_STACK, buildpacks: buildpacks, config: config).tap do |app|
+        app.before_deploy do
+          Pathname("Gemfile").write(<<~EOF)
+            source "https://rubygems.org"
+
+            gem "rake"
+          EOF
+
+          Pathname("Gemfile.lock").write(<<~EOF)
+            GEM
+              remote: https://rubygems.org/
+              specs:
+                rake (13.0.6)
+
+            PLATFORMS
+              ruby
+              x86_64-darwin-20
+
+            DEPENDENCIES
+              rake
+
+            RUBY VERSION
+               ruby 3.3.1p0
+          EOF
+
+          Pathname("Rakefile").write(<<~'EOF')
+            task "assets:precompile" do
+              out = `cd client && bundle exec ruby -v`
+              puts "cd version #{out}"
+              unless $?.success?
+                puts "Failed: #{out}"
+                exit 1
+              end
+            end
+          EOF
+
+          Pathname(".ruby-version").write("3.3.1")
+
+          dir = Pathname("client")
+          dir.mkpath
+          FileUtils.touch(dir.join(".gitkeep"))
+
+          # Inline buildpack to ensure build_report file is emitted on compile
+          bin = Pathname("bin").tap(&:mkpath)
+          detect = bin.join("detect")
+          compile = bin.join("compile")
+          release = bin.join("release")
+
+          [detect, compile, release].each do |path|
+            FileUtils.touch(path)
+            FileUtils.chmod("+x", path)
+            path.write(<<~EOF)
+              #!/usr/bin/env bash
+              exit 0
+            EOF
+          end
+
+          bash_functions_contents = Pathname(__dir__).join("..").join("..").join("bin").join("support").join("bash_functions.sh").read
+          bin.join("support").tap(&:mkpath).join("bash_functions.sh").write(<<~EOF)
+            #{bash_functions_contents}
+          EOF
+
+          compile.write(<<~EOF)
+            #!/usr/bin/env bash
+
+            echo "## PRINTING REPORT FILE ##"
+            #{Pathname(__dir__).join("..").join("..").join("bin").join("report").read}
+            echo "## REPORT FILE DONE ##"
+          EOF
+        end
+
+        app.deploy do |app|
+          expected = "3.3.1"
+          expect(expected).to_not eq(LanguagePack::RubyVersion::DEFAULT_VERSION_NUMBER)
+          expect(app.output).to match("cd version ruby #{expected}")
+          begin
+            report_match = app.output.match(/## PRINTING REPORT FILE ##(?<yaml>.*)## REPORT FILE DONE/m) # https://rubular.com/r/FfaV5AEstigaMO
+            expect(report_match).to be_truthy
+            yaml = report_match[:yaml].gsub("remote: ", "")
+            report = YAML.load(yaml)
+            expect(report.fetch("ruby_version_full")).to eq(expected)
+            expect(report.fetch("dot_ruby_version.version")).to eq(expected)
+            expect(report.fetch("dot_ruby_version.vs_gemfile_lock")).to eq("match")
+          rescue Exception => e # standard:disable Lint/RescueException
+            puts app.output
+            puts yaml if yaml
+            puts report.inspect if report
+            raise e
+          end
+
+          expect(app.run("command -v ruby").strip).to eq("/app/bin/ruby")
         end
       end
     end
@@ -57,16 +223,173 @@ describe "Ruby apps" do
         Hatchet::Runner.new("default_ruby").deploy do |app, heroku|
           expect(app.output).to include("Writing config/database.yml to read from DATABASE_URL")
           expect(app.output).not_to include("Your app was upgraded to bundler")
+          expect(app.output).not_to include("Your Ruby version is not present on the next stack")
         end
       end
     end
 
     context "active record 4.1+" do
       it "doesn't write a heroku specific database.yml" do
-        Hatchet::Runner.new("activerecord41_scaffold").deploy do |app, heroku|
-          expect(app.output).not_to include("Writing config/database.yml to read from DATABASE_URL")
+        Hatchet::Runner.new("rails61", config: rails_lts_config, stack: rails_lts_stack).tap do |app|
+          app.deploy do
+            expect(app.output).not_to include("Writing config/database.yml to read from DATABASE_URL")
+          end
         end
       end
+    end
+  end
+end
+
+describe "Raise errors on specific gems" do
+  it "should raise on sqlite3" do
+    Hatchet::Runner.new("sqlite3_gemfile", allow_failure: true).deploy do |app|
+      expect(app).not_to be_deployed
+      expect(app.output).to include("Detected sqlite3 gem which is not supported")
+      expect(app.output).to include("devcenter.heroku.com/articles/sqlite3")
+    end
+  end
+end
+
+describe "No Lockfile" do
+  it "should not deploy" do
+    Hatchet::Runner.new("no_lockfile", allow_failure: true).deploy do |app|
+      expect(app).not_to be_deployed
+      expect(app.output).to include("Gemfile.lock required")
+    end
+  end
+end
+
+describe "Rack" do
+  it "should not overwrite already set environment variables" do
+    custom_env = SecureRandom.hex(16)
+    app = Hatchet::Runner.new("default_ruby", config: {"RACK_ENV" => custom_env, "BUNDLE_SIMULATE_VERSION" => "4"})
+    app.before_deploy do
+      Pathname("Rakefile").write(<<~'EOF')
+        task "assets:precompile" do
+          puts "Build time RACK_ENV: #{ENV["RACK_ENV"]}"
+        end
+      EOF
+
+      set_bundler_version(version: "2.7.2")
+    end
+
+    app.deploy do |app|
+      # Assert build time user provided value takes precedence over default
+      expect(app.output).to match("Build time RACK_ENV: #{custom_env}")
+
+      # Assert runtime/launch user provided value takes precedence over default
+      environment_variables = app.run("env")
+      expect(environment_variables).to match("RACK_ENV=#{custom_env}")
+      expect(environment_variables).to match("PUMA_PERSISTENT_TIMEOUT")
+
+      profile_d = app.run("cat .profile.d/ruby.sh")
+        .strip
+        .split("\n")
+        .sort
+        .join("\n")
+
+      expect(profile_d).to eq(<<~EOF.strip)
+        export BUNDLE_BIN=${BUNDLE_BIN:-vendor/bundle/bin}
+        export BUNDLE_DEPLOYMENT=${BUNDLE_DEPLOYMENT:-1}
+        export BUNDLE_PATH=${BUNDLE_PATH:-vendor/bundle}
+        export BUNDLE_WITHOUT=${BUNDLE_WITHOUT:-development:test}
+        export DISABLE_SPRING="1"
+        export GEM_PATH="$HOME/vendor/bundle/ruby/3.3.0:$GEM_PATH"
+        export LANG=${LANG:-en_US.UTF-8}
+        export MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}
+        export PATH="$HOME/bin:$HOME/vendor/bundle/bin:$HOME/vendor/bundle/ruby/3.3.0/bin:$PATH"
+        export PUMA_PERSISTENT_TIMEOUT=${PUMA_PERSISTENT_TIMEOUT:-95}
+        export RACK_ENV=${RACK_ENV:-production}
+      EOF
+    end
+  end
+end
+
+describe "build time config var behavior" do
+  it "works" do
+    # Print out the `env` of the build process before and after the Ruby buildpack and diff the results
+    buildpacks = [
+      "https://github.com/heroku/heroku-buildpack-inline.git",
+      :default,
+      "https://github.com/heroku/heroku-buildpack-inline.git"
+    ]
+
+    Hatchet::Runner.new("default_ruby", stack: DEFAULT_STACK, buildpacks: buildpacks).tap do |app|
+      app.before_deploy do
+        bin = Pathname("bin").tap(&:mkpath)
+        detect = bin.join("detect")
+        compile = bin.join("compile")
+        release = bin.join("release")
+
+        [detect, compile, release].each do |path|
+          FileUtils.touch(path)
+          FileUtils.chmod("+x", path)
+          path.write(<<~EOF)
+            #!/usr/bin/env bash
+            exit 0
+          EOF
+        end
+
+        compile.write(<<~EOF)
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          BUILD_DIR=$1
+          echo "BUILD_DIR: $BUILD_DIR"
+
+          echo "## PRINTING ENV ##"
+          env | sort
+          echo "## PRINTING ENV DONE ##"
+          exit 0
+        EOF
+      end
+
+      app.deploy do
+        diff = EnvDiff.new(app.output)
+
+        expect(diff.added.join("\n")).to eq(<<~EOF.strip)
+          BUNDLE_BIN=vendor/bundle/bin
+          BUNDLE_DEPLOYMENT=1
+          BUNDLE_PATH=vendor/bundle
+          BUNDLE_WITHOUT=development:test
+          GEM_PATH=<build dir>/vendor/bundle/ruby/3.3.0:
+          PUMA_PERSISTENT_TIMEOUT=95
+          RACK_ENV=production
+        EOF
+
+        expect(diff.path_after).to include(diff.path_before)
+        expect(diff.path_after).to include(
+          [
+            "<build dir>/bin",
+            "<build dir>/vendor/bundle/bin",
+            "<build dir>/vendor/bundle/ruby/3.3.0/bin",
+            "<build dir>/vendor/ruby-3.3.9/bin"
+          ].join(":")
+        )
+      end
+    end
+  end
+end
+
+describe "WEB_CONCURRENCY.sh" do
+  it "from a preceding buildpack is overwritten by this buildpack" do
+    buildpacks = [
+      "heroku/nodejs",
+      :default
+    ]
+    before_deploy = -> { run!(%(echo "{}" > package.json)) }
+    Hatchet::Runner.new("default_ruby", stack: DEFAULT_STACK, buildpacks: buildpacks, before_deploy: before_deploy).deploy do |app|
+      expect(app.run("cat .profile.d/WEB_CONCURRENCY.sh").strip).to be_empty
+      expect(app.run("echo $WEB_CONCURRENCY").strip).to be_empty
+      expect(app.run("echo $WEB_CONCURRENCY", heroku: {env: "WEB_CONCURRENCY=0"}).strip).to eq("0")
+    end
+  end
+
+  it "with SENSIBLE_DEFAULTS on sets environment variables" do
+    Hatchet::Runner.new("default_ruby", stack: DEFAULT_STACK, config: {"SENSIBLE_DEFAULTS" => "1"}).deploy do |app|
+      expect(app.run("cat .profile.d/WEB_CONCURRENCY.sh").strip).not_to be_empty
+      expect(app.run("echo $HEROKU_RAM_LIMIT_MB $WEB_CONCURRENCY $WEB_CONCURRENCY_SET_BY").strip).to eq("512 2 heroku/ruby")
+      expect(app.run("echo $WEB_CONCURRENCY", heroku: {env: "WEB_CONCURRENCY=3"}).strip).to eq("3")
     end
   end
 end

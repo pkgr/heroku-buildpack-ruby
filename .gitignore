@@ -6,3 +6,6 @@ vendor/bundle/*
 .ruby-version
 buildpacks/*
 .anvil/
+tmp/*.log
+log/*.log
+spec/examples.txt

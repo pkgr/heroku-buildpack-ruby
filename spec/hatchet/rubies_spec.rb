@@ -1,71 +1,85 @@
-require_relative '../spec_helper'
+require_relative "../spec_helper"
 
-describe "Ruby Versions on cedar-14" do
-  it "should allow patchlevels" do
-    app = Hatchet::Runner.new('mri_193_p547', stack: "cedar-14")
-    app.setup!
-    app.deploy do |app|
-      version = '1.9.3p547'
-      expect(app.output).to match("ruby-1.9.3-p547")
-      expect(app.run('ruby -v')).to match(version)
+describe "Ruby versions" do
+  it "should deploy jdk on heroku-24" do
+    Hatchet::Runner.new("default_ruby", stack: "heroku-24").tap do |app|
+      app.before_deploy do |app|
+        Pathname("Gemfile.lock").write(<<~EOM)
+          GEM
+            remote: https://rubygems.org/
+            specs:
+              rack (3.1.8)
+              rake (13.2.1)
+              webrick (1.9.1)
+
+          PLATFORMS
+            java
+
+          DEPENDENCIES
+            rack
+            rake
+            webrick
+
+          RUBY VERSION
+             ruby 3.1.4p0 (jruby 9.4.8.0)
+
+          BUNDLED WITH
+             2.5.23
+        EOM
+
+        Pathname("Rakefile").write(<<~'EOM')
+          task "assets:precompile" do
+            puts "JRUBY_OPTS is: #{ENV['JRUBY_OPTS']}"
+          end
+        EOM
+      end
+
+      app.deploy do
+        expect(app.output).to match("JRUBY_OPTS is: -Xcompile.invokedynamic=false")
+
+        app.set_config("JRUBY_BUILD_OPTS" => "--dev")
+        app.commit!
+        app.push!
+        expect(app.output).to match("JRUBY_OPTS is: --dev")
+
+        expect(app.run("ruby -v")).to match("jruby")
+      end
     end
   end
+end
 
-  it "should deploy ruby 1.9.2 properly" do
-    app = Hatchet::Runner.new('mri_192', stack: "cedar-14")
-    app.setup!
-    app.deploy do |app|
-      version = '1.9.2'
-      expect(app.output).to match(version)
-      expect(app.run('ruby -v')).to match(version)
+describe "Ruby on heroku-26" do
+  it "deploys Ruby 3.3.10" do
+    Hatchet::Runner.new("default_ruby", stack: "heroku-26").tap do |app|
+      app.before_deploy do
+        set_ruby_version(version: "3.3.10")
+      end
+
+      app.deploy do |app|
+        expect(app.run("command -v ruby").strip).to eq("/app/bin/ruby")
+      end
     end
   end
+end
 
-  it "should deploy ruby 1.9.3 properly" do
-    app = Hatchet::Runner.new('mri_193', stack: "cedar-14")
-    app.setup!
+describe "Upgrading ruby apps" do
+  it "works when changing versions" do
+    version = "3.3.1"
+    expect(version).to_not eq(LanguagePack::RubyVersion::DEFAULT_VERSION_NUMBER)
+    app = Hatchet::Runner.new("default_ruby", stack: DEFAULT_STACK)
     app.deploy do |app|
-      version = '1.9.3'
-      expect(app.output).to match(version)
-      expect(app.run('ruby -v')).to match(version)
-    end
-  end
+      # default version
+      expect(app.run("env | grep MALLOC_ARENA_MAX")).to match("MALLOC_ARENA_MAX=2")
+      expect(app.run("env | grep DISABLE_SPRING")).to match("DISABLE_SPRING=1")
 
-  it "should deploy ruby 2.0.0 properly" do
-    app = Hatchet::Runner.new('mri_200', stack: "cedar-14")
-    app.setup!
-    app.deploy do |app|
-      version = '2.0.0'
-      expect(app.output).to match(version)
-      expect(app.run('ruby -v')).to match(version)
+      # Deploy again
+      set_ruby_version(version: version)
 
-      expect(app.output).to match("devcenter.heroku.com/articles/ruby-default-web-server")
-    end
-  end
-
-  it "should deploy jdk 8 on cedar-14 by default" do
-    app = Hatchet::Runner.new("ruby_193_jruby_17161", stack: "cedar-14")
-    app.setup!
-    app.deploy do |app|
-      expect(app.output).to match("Installing JVM: openjdk-8")
-      expect(app.output).to match("JRUBY_OPTS is:  -Xcompile.invokedynamic=false")
-      expect(app.output).not_to include("OpenJDK 64-Bit Server VM warning")
-
-      `git commit -am "redeploy" --allow-empty`
-      app.set_config("JRUBY_BUILD_OPTS" => "--dev")
+      run!("git add -A; git commit -m update-ruby")
       app.push!
-      expect(app.output).to match("JRUBY_OPTS is:  --dev")
-
-      expect(app.run("ls vendor/jvm/jre/lib/ext")).to match("pgconfig.jar")
-    end
-  end
-
-  it "should deploy jruby 1.7.16.1 (jdk 7) properly on cedar-14 with sys props file" do
-    app = Hatchet::Runner.new("ruby_193_jruby_17161_jdk7", stack: "cedar-14")
-    app.setup!
-    app.deploy do |app|
-      expect(app.output).to match("Installing JVM: openjdk-7")
-      expect(app.output).not_to include("OpenJDK 64-Bit Server VM warning")
+      expect(app.output).to match(version)
+      expect(app.run("ruby -v")).to match(version)
+      expect(app.output).to match("Ruby version change detected")
     end
   end
 end
